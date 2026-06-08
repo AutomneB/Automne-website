@@ -1,0 +1,83 @@
+name: tagging and push on docker hub
+
+on:
+  push:
+    branches: [main, dev]
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+
+  tag_commit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get current tag (expects "vMajor.Minor.Fix")
+        run: echo "CURRENT_TAG=$(git tag | sort -V | tail -1)" >> $GITHUB_ENV
+      
+      - name: Define minor and major
+        run: |
+          if [[ $CURRENT_TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "MAJOR=${BASH_REMATCH[1]}" >> $GITHUB_ENV
+            echo "MINOR=${BASH_REMATCH[2]}" >> $GITHUB_ENV
+            echo "FIX=${BASH_REMATCH[3]}" >> $GITHUB_ENV
+          else
+            echo "Tag '$CURRENT_TAG' is not in vMAJOR.MINOR.FIX format" >&2
+            exit 1
+          fi
+
+      - name: Create new Tag
+        run: |
+          if [[ $GITHUB_REF_NAME == 'main' ]]; then
+            echo "NEW_TAG=v$((MAJOR + 1)).0.0" >> $GITHUB_ENV
+          elif [[ $GITHUB_REF_NAME == 'dev' ]]; then
+            echo "NEW_TAG=v$MAJOR.$((MINOR + 1)).0" >> $GITHUB_ENV
+          else
+            echo "The current branch ref is invalid: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Push the tag
+        run: |  
+          git tag $NEW_TAG $GITHUB_SHA
+          git push origin $NEW_TAG
+      
+      - name: Output the tag
+        id: tag
+        run: echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+
+
+  build_and_push:
+    needs: tag_commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: teryel/automne-website:${{ needs.tag_commit.outputs.new_tag }}
